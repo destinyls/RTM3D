@@ -437,7 +437,7 @@ class Position_loss(nn.Module):
         dim_mask = dim<0
         dim = torch.clamp(dim, 0 , 10)
         dim_mask_score_mask = torch.sum(dim_mask, dim=2)
-        dim_mask_score_mask = 1 - (dim_mask_score_mask > 0)
+        dim_mask_score_mask = 1 - (dim_mask_score_mask > 0).int()
         dim_mask_score_mask = dim_mask_score_mask.float()
 
         box_pred = torch.cat((pinv, dim, rot_y), dim=2).detach()

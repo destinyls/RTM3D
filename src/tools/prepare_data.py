@@ -48,12 +48,12 @@ def unproject_2d_to_3d(pt_2d, depth, P):
   pt_3d = np.array([x, y, z], dtype=np.float32)
   return pt_3d
 if __name__ == '__main__':
-    img2_path='/home/lipeixuan/3ddetectionkitti/data_object_image_2/training/image_2/'
-    img3_path = '/home/lipeixuan/3ddetectionkitti/data_object_image_3/training/image_3/'
-    calib_path = '/home/lipeixuan/3ddetectionkitti/data_object_calib/training/calib/'
-    label_path='/home/lipeixuan/3ddetectionkitti/label/training/label_2/'
-    outp='/home/lipeixuan/3ddetectionkitti/kitti_format/'
-    test_path='/home/lipeixuan/3ddetectionkitti/data_object_image_2/testing/image_2/'
+    img2_path='/root/kitti_dataset/training/image_2/'
+    img3_path = '/root/kitti_dataset/training/image_3/'
+    calib_path = '/root/kitti_dataset/training/calib/'
+    label_path='/root/kitti_dataset/training/label_2/'
+    outp='/root/RTM3D/kitti_format/'
+    test_path='/root/kitti_dataset/testing/image_2/'
     image_target_path = outp + 'data/kitti/image/'
     if not os.path.exists(image_target_path):
         os.makedirs(image_target_path)

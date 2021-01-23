@@ -1,0 +1,12 @@
+kitti_format/
+
+.idea
+.so
+.pyc
+checkpoints/
+
+__pycache__/
+iou3d.egg-info/
+build/
+dist/
+
