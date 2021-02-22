@@ -280,6 +280,7 @@ class Debugger(object):
     cat=results[40]
     det_cats = ['Car', 'Pedestrian', 'Cyclist']
     self.write_detection_results(det_cats[int(cat)],result_dir,file_number,box,dim,pos,ori,score)
+    
   def write_detection_results(self,cls, result_dir, file_number, box,dim,pos,ori,score):
       '''One by one write detection results to KITTI format label files.
       '''

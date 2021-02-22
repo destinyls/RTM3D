@@ -3,6 +3,8 @@ from __future__ import division
 from __future__ import print_function
 
 import cv2
+import csv
+import os
 import numpy as np
 from progress.bar import Bar
 import time
@@ -102,13 +104,28 @@ class CarPoseDetector(BaseDetector):
 
     def show_results(self, debugger, image, results, calib):
         debugger.add_img(image, img_id='car_pose')
+
+        valid_results = False
         for bbox in results[1]:
             if bbox[4] > self.opt.vis_thresh:
+                valid_results = True
                 debugger.add_coco_bbox(bbox[:4], bbox[40], bbox[4], img_id='car_pose')
                 debugger.add_kitti_hp(bbox[5:23], img_id='car_pose')
                 debugger.add_bev(bbox, img_id='car_pose',is_faster=self.opt.faster)
                 debugger.add_3d_detection(bbox, calib, img_id='car_pose')
                 debugger.save_kitti_format(bbox,self.image_path,self.opt,img_id='car_pose',is_faster=self.opt.faster)
+        
+            if not valid_results:
+                result_dir= self.opt.results_dir
+                result_dir = result_dir + '/data'
+                
+                if not os.path.exists(result_dir):
+                    os.makedirs(result_dir)
+                file_number=self.image_path.split('.')[-2][-6:]
+                pred_filename = result_dir + '/' + file_number + '.txt'
+                with open(pred_filename, 'w', newline='') as f:
+                    w = csv.writer(f, delimiter=' ', lineterminator='\n')
+                    w.writerow([])
         if self.opt.vis:
             debugger.show_all_imgs(pause=self.pause)
 

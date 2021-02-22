@@ -8,7 +8,7 @@ import numpy as np
 import cv2
 nuscenes = False
 
-DATA_PATH = './kitti_format/data/kitti/'
+DATA_PATH = '/root/Dataset/kitti/'
 if nuscenes:
     DATA_PATH = './kitti_format/data/nuscenes/'
 DEBUG = False

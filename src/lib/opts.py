@@ -11,6 +11,8 @@ class opts(object):
     self.parser = argparse.ArgumentParser()
     # basic experiment setting
     self.parser.add_argument('--exp_id', default='default')
+    self.parser.add_argument('--exp_dir', default='./checkpoints')
+
     self.parser.add_argument('--test', action='store_true')
     self.parser.add_argument('--debug', type=int, default=0,
                              help='level of visualization.'
@@ -18,14 +20,14 @@ class opts(object):
                                   '2: show the network output features'
                                   '3: use matplot to display' # useful when lunching training with ipython notebook
                                   '4: save all visualizations to disk')
-    self.parser.add_argument('--demo', default='', 
+    self.parser.add_argument('--demo', default='./kitti_format/data/kitti/val.txt', 
                              help='path to image/ image folders/ video. '
                                   'or "webcam"')
-    self.parser.add_argument('--calib_dir', default='',
+    self.parser.add_argument('--calib_dir', default='./kitti_format/data/kitti/calib/',
                              help='path to calib for 3D display')
     self.parser.add_argument('--load_model', default='',
                              help='path to pretrained model')
-    self.parser.add_argument('--data_dir', default='',
+    self.parser.add_argument('--data_dir', default='./kitti_format',
                              help='path to dataset')
     self.parser.add_argument('--resume', action='store_true',
                              help='resume an experiment. '
@@ -96,7 +98,7 @@ class opts(object):
                              help='learning rate for batch size 32.')
     self.parser.add_argument('--lr_step', type=str, default='90,120',
                              help='drop learning rate by 10.')
-    self.parser.add_argument('--num_epochs', type=int, default=140,
+    self.parser.add_argument('--num_epochs', type=int, default=200,
                              help='total training epochs.')
     self.parser.add_argument('--batch_size', type=int, default=32,
                              help='batch size')
@@ -283,7 +285,9 @@ class opts(object):
     opt.root_dir = os.path.join(os.path.dirname(__file__), '..', '..')
     data_dir = opt.data_dir
     opt.data_dir = os.path.join(data_dir, 'data')
-    opt.exp_dir = os.path.join(data_dir, 'exp')
+    
+    if opt.exp_dir == '':
+      opt.exp_dir = os.path.join(data_dir, 'exp')
     opt.save_dir = os.path.join(opt.exp_dir, opt.exp_id)
     opt.debug_dir = os.path.join(opt.save_dir, 'debug')
     opt.results_dir = os.path.join(opt.exp_dir, 'results')
