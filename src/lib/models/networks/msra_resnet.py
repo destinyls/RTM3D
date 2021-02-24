@@ -17,6 +17,11 @@ import torch.utils.model_zoo as model_zoo
 import matplotlib.pyplot as plt
 import cv2
 import numpy as np
+
+from models.decode import _nms, _topk
+from models.utils import _gather_feat, _transpose_and_gather_feat
+
+
 BN_MOMENTUM = 0.1
 
 model_urls = {
@@ -133,6 +138,8 @@ class PoseResNet(nn.Module):
         self.heads["regression_hp"] = 20
         self.heads["regression_2dbox"] = 4
         self.heads["regression_3dbox"] = 12
+        self.heads["middle"] = head_conv
+
         self.hm = nn.Sequential(
             nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
@@ -143,20 +150,28 @@ class PoseResNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(head_conv, 9, kernel_size=1, stride=1, padding=0)
         )
-        self.regression_hp = nn.Sequential(
+
+        self.regression_middle_hp = nn.Sequential(
             nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
-            nn.Conv2d(head_conv, 20, kernel_size=1, stride=1, padding=0)
+        )
+        self.regression_middle_2dbox = nn.Sequential(
+            nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+        )
+        self.regression_middle_3dbox = nn.Sequential(
+            nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+        )
+        
+        self.regression_hp = nn.Sequential(
+            nn.Conv2d(head_conv+384, 20, kernel_size=1, stride=1, padding=0)
         )
         self.regression_2dbox = nn.Sequential(
-            nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(head_conv, 4, kernel_size=1, stride=1, padding=0)
+            nn.Conv2d(head_conv+384, 4, kernel_size=1, stride=1, padding=0)
         )
         self.regression_3dbox = nn.Sequential(
-            nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(head_conv, 12, kernel_size=1, stride=1, padding=0)
+            nn.Conv2d(head_conv+384, 12, kernel_size=1, stride=1, padding=0)
         )
 
     def _make_layer(self, block, planes, blocks, stride=1):
@@ -208,7 +223,7 @@ class PoseResNet(nn.Module):
 
             return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x, inds=None):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -226,17 +241,66 @@ class PoseResNet(nn.Module):
         ret = {}
         ret["hm"] = self.hm(up_level4)
         ret["hm_hp"] = self.hm_hp(up_level4)
-        regression_hp = self.regression_hp(up_level4)
-        regression_2dbox = self.regression_2dbox(up_level4)
-        regression_3dbox = self.regression_3dbox(up_level4)
+        head_middle_hp = self.regression_middle_hp(up_level4)
+        head_middle_2dbox = self.regression_middle_2dbox(up_level4)
+        head_middle_3dbox = self.regression_middle_3dbox(up_level4)
+
+        if self.training:
+            proj_points = inds
+        if not self.training:
+            heatmap = torch.sigmoid(ret['hm'])
+            heatmap = _nms(heatmap)
+            scores, inds, clses, ys, xs = _topk(heatmap, K=self.max_detection)
+            proj_points = inds
+
+        proj_points_8 = proj_points // 2
+        proj_points_16 = proj_points // 4
+        _, _, h4, w4 = up_level4.size()
+        _, _, h8, w8 = up_level8.size()
+        _, _, h16, w16 = up_level16.size()
+        proj_points = torch.clamp(proj_points, 0, w4*h4-1)
+        proj_points_8 = torch.clamp(proj_points_8, 0, w8*h8-1)
+        proj_points_16 = torch.clamp(proj_points_16, 0, w16*h16-1)
+
+        print("proj_points: ", proj_points.shape)
+
+        # [N, K, C]
+        hp_pois = _transpose_and_gather_feat(head_middle_hp, proj_points)
+        box2d_pois = _transpose_and_gather_feat(head_middle_2dbox, proj_points)
+        box3d_pois = _transpose_and_gather_feat(head_middle_3dbox, proj_points)
+        # 1/8 [N, K, 128]
+        up_level8_pois = _transpose_and_gather_feat(up_level8, proj_points_8)
+        # 1/16 [N, K, 256]
+        up_level16_pois = _transpose_and_gather_feat(up_level16, proj_points_16)
+
+        # [N, K, 640]
+        hp_pois = torch.cat((hp_pois, up_level8_pois, up_level16_pois), dim=-1)
+        box2d_pois = torch.cat((box2d_pois, up_level8_pois, up_level16_pois), dim=-1)
+        box3d_pois = torch.cat((box3d_pois, up_level8_pois, up_level16_pois), dim=-1)
+
+        # [N, 640, K, 1]
+        hp_pois = hp_pois.permute(0, 2, 1).contiguous().unsqueeze(-1)
+        box2d_pois = box2d_pois.permute(0, 2, 1).contiguous().unsqueeze(-1)
+        box3d_pois = box3d_pois.permute(0, 2, 1).contiguous().unsqueeze(-1)
+
+        # [N, C, K, 1]
+        hp_pois = self.regression_hp(hp_pois)
+        box2d_pois = self.regression_2dbox(box2d_pois)
+        box3d_pois = self.regression_3dbox(box3d_pois)
+
+        # [N, K, C]
+        hp_pois = hp_pois.permute(0, 2, 1, 3).contiguous().squeeze(-1)
+        box2d_pois = box2d_pois.permute(0, 2, 1, 3).contiguous().squeeze(-1)
+        box3d_pois = box3d_pois.permute(0, 2, 1, 3).contiguous().squeeze(-1)
+
         # {'hm': 3, 'wh': 2, 'hps': 18, 'rot': 8, 'dim': 3, 'prob': 1, 'reg': 2, 'hm_hp': 9, 'hp_offset': 2}
-        ret["reg"] = regression_2dbox[:, :2, ...]
-        ret["wh"] = regression_2dbox[:, 2:, ...]
-        ret["hp_offset"] = regression_hp[:, :2, ...]
-        ret["hps"] = regression_hp[:, 2:, ...]
-        ret["rot"] = regression_3dbox[:, :8, ...]
-        ret["dim"] = regression_3dbox[:, 8:11, ...]
-        ret["prob"] = regression_3dbox[:, 11, ...].unsqueeze(1)
+        ret["reg"] = box2d_pois[:, :, :2]
+        ret["wh"] = box2d_pois[:, :, 2:]
+        ret["hp_offset"] = hp_pois[:, :, :2]
+        ret["hps"] = hp_pois[:, :, 2:]
+        ret["rot"] = box3d_pois[:, :, :8]
+        ret["dim"] = box3d_pois[:, :, 8:11]
+        ret["prob"] = box3d_pois[:, :, 11].unsqueeze(-1)
         return [ret]
 
     def draw_features(self,width, height, x, savename):
@@ -293,6 +357,11 @@ class PoseResNet(nn.Module):
 
             self._init_conv_weight(self.hm, 'hm')
             self._init_conv_weight(self.hm_hp, 'hm_hp')
+
+            self._init_conv_weight(self.regression_middle_hp, 'middle')
+            self._init_conv_weight(self.regression_middle_2dbox, 'middle')
+            self._init_conv_weight(self.regression_middle_3dbox, 'middle')
+
             self._init_conv_weight(self.regression_hp, 'regression_hp')
             self._init_conv_weight(self.regression_2dbox, 'regression_2dbox')
             self._init_conv_weight(self.regression_3dbox, 'regression_3dbox')

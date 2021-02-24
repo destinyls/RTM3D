@@ -192,7 +192,6 @@ class RegLoss(nn.Module):
         loss = _reg_loss(pred, target, mask)
         return loss
 
-
 class RegL1Loss(nn.Module):
     def __init__(self):
         super(RegL1Loss, self).__init__()
@@ -205,6 +204,21 @@ class RegL1Loss(nn.Module):
         loss = loss / (mask.sum() + 1e-4)
         return loss
 
+class PoisRegL1Loss(nn.Module):
+    def __init__(self):
+        super(PoisRegL1Loss, self).__init__()
+
+    def forward(self, pred, mask, target):
+
+        print("pred: ", pred.shape)
+        print("mask: ", mask.shape)
+        print("target: ", target.shape)
+
+        mask = mask.unsqueeze(2).expand_as(pred).float()
+        # loss = F.l1_loss(pred * mask, target * mask, reduction='elementwise_mean')
+        loss = F.l1_loss(pred * mask, target * mask, size_average=False)
+        loss = loss / (mask.sum() + 1e-4)
+        return loss
 
 class NormRegL1Loss(nn.Module):
     def __init__(self):
@@ -220,24 +234,55 @@ class NormRegL1Loss(nn.Module):
         loss = loss / (mask.sum() + 1e-4)
         return loss
 
+class PoisL1Loss(nn.Module):
+  def __init__(self):
+    super(PoisL1Loss, self).__init__()
+  
+  def forward(self, pred, mask, target):
+    mask = mask.unsqueeze(2).expand_as(pred).float()
+    loss = F.l1_loss(pred * mask, target * mask, reduction='mean')
+    return loss
+
+class PoisBinRotLoss(nn.Module):
+  def __init__(self):
+    super(PoisBinRotLoss, self).__init__()
+  
+  def forward(self, pred, mask, rotbin, rotres):
+    loss = compute_rot_loss(pred, rotbin, rotres, mask)
+    return loss
+
+def compute_res_loss(output, target):
+    return F.smooth_l1_loss(output, target, reduction='mean')
+
 class RegWeightedL1Loss(nn.Module):
     def __init__(self):
         super(RegWeightedL1Loss, self).__init__()
 
-    def forward(self, output, mask, ind, target,dep):
+    def forward(self, output, mask, ind, target, dep):
         dep=dep.squeeze(2)
         dep[dep<5]=dep[dep<5]*0.01
         dep[dep >= 5] = torch.log10(dep[dep >=5]-4)+0.1
         pred = _transpose_and_gather_feat(output, ind)
         mask = mask.float()
-        # loss = F.l1_loss(pred * mask, target * mask, reduction='elementwise_mean')
-        #losss=torch.abs(pred * mask-target * mask)
-        #loss = F.l1_loss(pred * mask, target * mask, size_average=False)
         loss=torch.abs(pred * mask-target * mask)
         loss=torch.sum(loss,dim=2)*dep
         loss=loss.sum()
         loss = loss / (mask.sum() + 1e-4)
+        return loss
 
+class PoisRegWeightedL1Loss(nn.Module):
+    def __init__(self):
+        super(PoisRegWeightedL1Loss, self).__init__()
+
+    def forward(self, pred, mask, target, dep):
+        dep = dep.squeeze(2)
+        dep[dep<5] = dep[dep<5]*0.01
+        dep[dep >= 5] = torch.log10(dep[dep >=5]-4)+0.1
+        mask = mask.float()
+        loss = torch.abs(pred * mask - target * mask)
+        loss = torch.sum(loss,dim=2) * dep
+        loss = loss.sum()
+        loss = loss / (mask.sum() + 1e-4)
         return loss
 
 # class RegWeightedL1Loss(nn.Module):
