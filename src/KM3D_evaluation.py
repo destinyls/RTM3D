@@ -21,7 +21,7 @@ time_stats = ['net', 'dec']
 def demo(opt):
     os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
     opt.debug = max(opt.debug, 1)
-    opt.heads = {'hm': opt.num_classes, 'hps': 18, 'rot': 8, 'dim': 3, 'prob': 1}
+    # opt.heads = {'hm': opt.num_classes, 'hps': 18, 'rot': 8, 'dim': 3, 'prob': 1}
     opt.hm_hp=False
     opt.reg_offset=False
     opt.reg_hp_offset=False
