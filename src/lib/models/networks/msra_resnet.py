@@ -135,7 +135,7 @@ class PoseResNet(nn.Module):
         self.deconv_layers_3 = self._make_deconv_layer(64, 4)
 
         self.heads = heads
-        self.heads["regression_hp"] = 20
+        self.heads["regression_hps"] = 18
         self.heads["regression_2dbox"] = 4
         self.heads["regression_3dbox"] = 12
         self.heads["middle"] = head_conv
@@ -145,17 +145,25 @@ class PoseResNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(head_conv, 3, kernel_size=1, stride=1, padding=0)
         )
-        self.hm_hp = nn.Sequential(
-            nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(head_conv, 9, kernel_size=1, stride=1, padding=0)
-        )
+        if "hm_hp" in self.heads:
+            self.hm_hp = nn.Sequential(
+                nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(head_conv, 9, kernel_size=1, stride=1, padding=0)
+            )
+        if 'hp_offset' in self.heads:
+            self.hp_offset = nn.Sequential(
+                nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(head_conv, 2, kernel_size=1, stride=1, padding=0)
+            )
 
-        self.regression_middle_hp = nn.Sequential(
-            nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-        )
-        self.regression_middle_2dbox = nn.Sequential(
+        if 'wh' in self.heads and 'reg' in self.heads:
+            self.regression_middle_2dbox = nn.Sequential(
+                nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.ReLU(inplace=True),
+            )
+        self.regression_middle_hps = nn.Sequential(
             nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
         )
@@ -164,8 +172,8 @@ class PoseResNet(nn.Module):
             nn.ReLU(inplace=True),
         )
         
-        self.regression_hp = nn.Sequential(
-            nn.Conv2d(head_conv+384, 20, kernel_size=1, stride=1, padding=0)
+        self.regression_hps = nn.Sequential(
+            nn.Conv2d(head_conv+384, 18, kernel_size=1, stride=1, padding=0)
         )
         self.regression_2dbox = nn.Sequential(
             nn.Conv2d(head_conv+384, 4, kernel_size=1, stride=1, padding=0)
@@ -240,17 +248,17 @@ class PoseResNet(nn.Module):
 
         ret = {}
         ret["hm"] = self.hm(up_level4)
-        ret["hm_hp"] = self.hm_hp(up_level4)
-        head_middle_hp = self.regression_middle_hp(up_level4)
-        head_middle_2dbox = self.regression_middle_2dbox(up_level4)
-        head_middle_3dbox = self.regression_middle_3dbox(up_level4)
+        if 'hm_hp' in self.heads:
+            ret["hm_hp"] = self.hm_hp(up_level4)
+        if 'hp_offset' in self.heads:
+            ret["hp_offset"] = self.hp_offset(up_level4)
 
         if self.training:
             proj_points = inds
         if not self.training:
             heatmap = torch.sigmoid(ret['hm'])
             heatmap = _nms(heatmap)
-            scores, inds, clses, ys, xs = _topk(heatmap, K=self.max_detection)
+            scores, inds, clses, ys, xs = _topk(heatmap, K=100)
             proj_points = inds
 
         proj_points_8 = proj_points // 2
@@ -262,45 +270,40 @@ class PoseResNet(nn.Module):
         proj_points_8 = torch.clamp(proj_points_8, 0, w8*h8-1)
         proj_points_16 = torch.clamp(proj_points_16, 0, w16*h16-1)
 
-        print("proj_points: ", proj_points.shape)
-
-        # [N, K, C]
-        hp_pois = _transpose_and_gather_feat(head_middle_hp, proj_points)
-        box2d_pois = _transpose_and_gather_feat(head_middle_2dbox, proj_points)
-        box3d_pois = _transpose_and_gather_feat(head_middle_3dbox, proj_points)
-        # 1/8 [N, K, 128]
         up_level8_pois = _transpose_and_gather_feat(up_level8, proj_points_8)
-        # 1/16 [N, K, 256]
         up_level16_pois = _transpose_and_gather_feat(up_level16, proj_points_16)
+        if 'wh' in self.heads and 'reg' in self.heads:
+            head_middle_2dbox = self.regression_middle_2dbox(up_level4)
+            box2d_pois = _transpose_and_gather_feat(head_middle_2dbox, proj_points)
+            box2d_pois = torch.cat((box2d_pois, up_level8_pois, up_level16_pois), dim=-1)
+            box2d_pois = box2d_pois.permute(0, 2, 1).contiguous().unsqueeze(-1)
+            box2d_pois = self.regression_2dbox(box2d_pois)
+            box2d_pois = box2d_pois.permute(0, 2, 1, 3).contiguous().squeeze(-1)
+            ret["reg"] = box2d_pois[:, :, :2]
+            ret["wh"] = box2d_pois[:, :, 2:]
 
-        # [N, K, 640]
-        hp_pois = torch.cat((hp_pois, up_level8_pois, up_level16_pois), dim=-1)
-        box2d_pois = torch.cat((box2d_pois, up_level8_pois, up_level16_pois), dim=-1)
+        head_middle_hps = self.regression_middle_hps(up_level4)
+        hps_pois = _transpose_and_gather_feat(head_middle_hps, proj_points)
+        hps_pois = torch.cat((hps_pois, up_level8_pois, up_level16_pois), dim=-1)
+        hps_pois = hps_pois.permute(0, 2, 1).contiguous().unsqueeze(-1)
+        hps_pois = self.regression_hps(hps_pois)
+        hps_pois = hps_pois.permute(0, 2, 1, 3).contiguous().squeeze(-1)
+        ret["hps"] = hps_pois
+
+        head_middle_3dbox = self.regression_middle_3dbox(up_level4)
+        box3d_pois = _transpose_and_gather_feat(head_middle_3dbox, proj_points)
         box3d_pois = torch.cat((box3d_pois, up_level8_pois, up_level16_pois), dim=-1)
-
         # [N, 640, K, 1]
-        hp_pois = hp_pois.permute(0, 2, 1).contiguous().unsqueeze(-1)
-        box2d_pois = box2d_pois.permute(0, 2, 1).contiguous().unsqueeze(-1)
         box3d_pois = box3d_pois.permute(0, 2, 1).contiguous().unsqueeze(-1)
-
         # [N, C, K, 1]
-        hp_pois = self.regression_hp(hp_pois)
-        box2d_pois = self.regression_2dbox(box2d_pois)
         box3d_pois = self.regression_3dbox(box3d_pois)
-
         # [N, K, C]
-        hp_pois = hp_pois.permute(0, 2, 1, 3).contiguous().squeeze(-1)
-        box2d_pois = box2d_pois.permute(0, 2, 1, 3).contiguous().squeeze(-1)
         box3d_pois = box3d_pois.permute(0, 2, 1, 3).contiguous().squeeze(-1)
-
         # {'hm': 3, 'wh': 2, 'hps': 18, 'rot': 8, 'dim': 3, 'prob': 1, 'reg': 2, 'hm_hp': 9, 'hp_offset': 2}
-        ret["reg"] = box2d_pois[:, :, :2]
-        ret["wh"] = box2d_pois[:, :, 2:]
-        ret["hp_offset"] = hp_pois[:, :, :2]
-        ret["hps"] = hp_pois[:, :, 2:]
         ret["rot"] = box3d_pois[:, :, :8]
         ret["dim"] = box3d_pois[:, :, 8:11]
         ret["prob"] = box3d_pois[:, :, 11].unsqueeze(-1)
+
         return [ret]
 
     def draw_features(self,width, height, x, savename):
@@ -340,7 +343,7 @@ class PoseResNet(nn.Module):
     def _init_conv_weight(self, layers, head):
         for i, m in enumerate(layers.modules()):
             if isinstance(m, nn.Conv2d):
-                if 'hm' in head or 'hm_hp' in head:
+                if 'hm' in head:
                     if m.weight.shape[0] == self.heads[head]:
                         nn.init.constant_(m.bias, -2.19)
                 else:
@@ -356,14 +359,17 @@ class PoseResNet(nn.Module):
             self.init_deconv(self.deconv_layers_3)
 
             self._init_conv_weight(self.hm, 'hm')
-            self._init_conv_weight(self.hm_hp, 'hm_hp')
+            if 'hm_hp' in self.heads:
+                self._init_conv_weight(self.hm_hp, 'hm_hp')
+            if 'hp_offset' in self.heads:
+                self._init_conv_weight(self.hp_offset, 'hp_offset')
+            if 'wh' in self.heads and 'reg' in self.heads:
+                self._init_conv_weight(self.regression_middle_2dbox, 'middle')
+                self._init_conv_weight(self.regression_2dbox, 'regression_2dbox')
 
-            self._init_conv_weight(self.regression_middle_hp, 'middle')
-            self._init_conv_weight(self.regression_middle_2dbox, 'middle')
+            self._init_conv_weight(self.regression_middle_hps, 'middle')
             self._init_conv_weight(self.regression_middle_3dbox, 'middle')
-
-            self._init_conv_weight(self.regression_hp, 'regression_hp')
-            self._init_conv_weight(self.regression_2dbox, 'regression_2dbox')
+            self._init_conv_weight(self.regression_hps, 'regression_hps')
             self._init_conv_weight(self.regression_3dbox, 'regression_3dbox')
             #pretrained_state_dict = torch.load(pretrained)
             url = model_urls['resnet{}'.format(num_layers)]

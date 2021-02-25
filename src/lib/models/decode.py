@@ -772,10 +772,9 @@ def car_pose_decode(
 
     return detections
 def car_pose_decode_faster(
-        heat, kps,dim,rot, prob,K=100,meta=None,const=None):
-
+        heat, kps, dim, rot, prob, K=100, meta=None, const=None):
     batch, cat, height, width = heat.size()
-    num_joints = kps.shape[1] // 2
+    num_joints = kps.shape[-1] // 2
     # heat = torch.sigmoid(heat)
     # perform nms on heatmaps
     # hm_show,_=torch.max(hm_hp,1)
@@ -787,21 +786,19 @@ def car_pose_decode_faster(
     heat = _nms(heat)
     scores, inds, clses, ys, xs = _topk(heat, K=K)
     clses = clses.view(batch, K, 1).float()
-    kps = _transpose_and_gather_feat(kps, inds)
+    
     kps = kps.view(batch, K, num_joints * 2)
     kps[..., ::2] += xs.view(batch, K, 1).expand(batch, K, num_joints)
     kps[..., 1::2] += ys.view(batch, K, 1).expand(batch, K, num_joints)
 
     scores = scores.view(batch, K, 1)
 
-    dim = _transpose_and_gather_feat(dim, inds)
     dim = dim.view(batch, K, 3)
     # dim[:, :, 0] = torch.exp(dim[:, :, 0]) * 1.63
     # dim[:, :, 1] = torch.exp(dim[:, :, 1]) * 1.53
     # dim[:, :, 2] = torch.exp(dim[:, :, 2]) * 3.88
-    rot = _transpose_and_gather_feat(rot, inds)
     rot = rot.view(batch, K, 8)
-    prob = _transpose_and_gather_feat(prob, inds)[:,:,0]
+    prob = prob[:,:,0]
     prob = prob.view(batch, K, 1)
     position,rot_y,kps_inv=gen_position(kps,dim,rot,meta,const)
     #bboxes=kps[:,:,0:4]

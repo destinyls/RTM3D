@@ -209,11 +209,6 @@ class PoisRegL1Loss(nn.Module):
         super(PoisRegL1Loss, self).__init__()
 
     def forward(self, pred, mask, target):
-
-        print("pred: ", pred.shape)
-        print("mask: ", mask.shape)
-        print("target: ", target.shape)
-
         mask = mask.unsqueeze(2).expand_as(pred).float()
         # loss = F.l1_loss(pred * mask, target * mask, reduction='elementwise_mean')
         loss = F.l1_loss(pred * mask, target * mask, size_average=False)
@@ -355,10 +350,11 @@ class Position_loss(nn.Module):
         self.num_joints = 9
 
     def forward(self, output, batch,phase=None):
-        dim = _transpose_and_gather_feat(output['dim'], batch['ind'])
-        rot = _transpose_and_gather_feat(output['rot'], batch['ind'])
-        prob = _transpose_and_gather_feat(output['prob'], batch['ind'])
-        kps = _transpose_and_gather_feat(output['hps'], batch['ind'])
+        dim = output['dim']
+        rot = output['rot']
+        prob = output['prob']
+        kps = output['hps']
+
         rot=rot.detach()### solving............
 
         b = dim.size(0)
@@ -499,8 +495,6 @@ class Position_loss(nn.Module):
         location_gt = batch['location']
         ori_gt = batch['ori']
         dim_gt[dim_mask] = 0
-
-
 
         gt_box = torch.cat((location_gt, dim_gt, ori_gt), dim=2)
         box_pred = box_pred.view(b * c, -1)

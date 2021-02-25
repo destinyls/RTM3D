@@ -118,7 +118,7 @@ class CarPoseDetector(BaseDetector):
             if not valid_results:
                 result_dir= self.opt.results_dir
                 result_dir = result_dir + '/data'
-                
+
                 if not os.path.exists(result_dir):
                     os.makedirs(result_dir)
                 file_number=self.image_path.split('.')[-2][-6:]
