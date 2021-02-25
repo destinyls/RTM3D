@@ -26,7 +26,7 @@ class ModelWithLoss(torch.nn.Module):
     self.loss = loss
   
   def forward(self, batch,unlabel=False,phase=None):
-    outputs = self.model(batch['input'], batch['ind'])
+    outputs = self.model(batch['input'], batch['ind'], batch['hp_ind'])
     if unlabel:
       loss, loss_stats=outputs[-1]['dim'].mean(),{}
     else:
