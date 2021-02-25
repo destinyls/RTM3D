@@ -48,7 +48,7 @@ class CarPoseLoss(torch.nn.Module):
         if opt.reg_offset and opt.off_weight > 0:
             off_loss = self.crit_pois_reg(output['reg'], batch['reg_mask'], batch['reg'])
         if opt.reg_hp_offset and opt.off_weight > 0:
-            hp_offset_loss = self.crit_reg(output['hp_offset'], batch['hp_mask'], batch['hp_ind'], batch['hp_offset'])
+            hp_offset_loss = self.crit_pois_reg(output['hp_offset'], batch['hp_mask'], batch['hp_offset'])
         if opt.hm_hp and opt.hm_hp_weight > 0:
             hm_hp_loss = self.crit_hm_hp(output['hm_hp'], batch['hm_hp'])
         coor_loss, prob_loss, box_score = self.position_loss(output, batch,phase)
