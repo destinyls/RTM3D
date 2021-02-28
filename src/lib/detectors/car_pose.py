@@ -16,7 +16,7 @@ except:
     print('NMS not imported! If you need it,'
           ' do \n cd $CenterNet_ROOT/src/lib/external \n make')
 from models.decode import multi_pose_decode
-from models.decode import car_pose_decode,car_pose_decode_faster
+from models.decode import car_pose_decode,car_pose_decode_faster, car_pose_decode_faster_train
 from models.utils import flip_tensor, flip_lr_off, flip_lr
 from utils.image import get_affine_transform
 from utils.post_process import multi_pose_post_process
@@ -30,6 +30,11 @@ class CarPoseDetector(BaseDetector):
     def __init__(self, opt):
         super(CarPoseDetector, self).__init__(opt)
         self.flip_idx = opt.flip_idx
+        const = torch.Tensor(
+            [[-1, 0], [0, -1], [-1, 0], [0, -1], [-1, 0], [0, -1], [-1, 0], [0, -1], [-1, 0], [0, -1], [-1, 0], [0, -1],
+            [-1, 0], [0, -1], [-1, 0], [0, -1]])
+        self.const = const.unsqueeze(0).unsqueeze(0)
+        self.const=self.const.to(self.opt.device)
 
     def process(self, images,meta, return_time=False):
         with torch.no_grad():

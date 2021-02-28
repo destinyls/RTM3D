@@ -148,7 +148,12 @@ for SPLIT in SPLITS:
                     num_keypoints=vis_num
 
                     off_set=(calib[0,3]-calib0[0,3])/calib[0,0]
-                    location[0] += off_set###################################################confuse
+                    '''
+                    BIG FLAG
+                    
+                    # location[0] += off_set  ###################################################confuse
+
+                    '''
                     alpha = rotation_y - math.atan2(pts_center[0, 0] - calib[0, 2], calib[0, 0])
                     ann = {'segmentation': [[0,0,0,0,0,0]],
                            'num_keypoints':num_keypoints,

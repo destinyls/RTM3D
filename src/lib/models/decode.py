@@ -573,11 +573,10 @@ def multi_pose_decode(
 
 import matplotlib.pyplot as plt
 import numpy as np
-def gen_position(kps,dim,rot,meta,const):
+
+def gen_position(kps,dim,rot,opinv,calib,const):
     b=kps.size(0)
     c=kps.size(1)
-    opinv=meta['trans_output_inv']
-    calib=meta['calib']
 
     opinv = opinv.unsqueeze(1)
     opinv = opinv.expand(b, c, -1, -1).contiguous().view(-1, 2, 3).float()
@@ -657,9 +656,6 @@ def gen_position(kps,dim,rot,meta,const):
     C[:, :, 15:16] = l * 0.5 * sinori + w * 0.5 * cosori
 
     B = B - kp_norm * C
-
-    # A=A*kps_mask1
-
     AT = A.permute(0, 1, 3, 2)
     AT = AT.view(b * c, 3, 16)
     A = A.view(b * c, 16, 3)
@@ -667,16 +663,14 @@ def gen_position(kps,dim,rot,meta,const):
     # mask = mask.unsqueeze(2)
 
     pinv = torch.bmm(AT, A)
-    pinv = torch.inverse(pinv)  # b*c 3 3
-
-
+    pinv = torch.inverse(pinv)  # b*c 3 
 
     pinv = torch.bmm(pinv, AT)
     pinv = torch.bmm(pinv, B)
     pinv = pinv.view(b, c, 3, 1).squeeze(3)
 
-    #pinv[:, :, 1] = pinv[:, :, 1] + dim[:, :, 0] / 2
     return pinv,rot_y,kps
+
 def car_pose_decode(
         heat, wh, kps,dim,rot, prob=None,reg=None, hm_hp=None, hp_offset=None, K=100,meta=None,const=None):
 
@@ -765,12 +759,10 @@ def car_pose_decode(
         kps = kps.permute(0, 2, 1, 3).contiguous().view(
             batch, K, num_joints * 2)
         hm_score=hm_score.permute(0, 2, 1, 3).squeeze(3).contiguous()
-    position,rot_y,kps_inv=gen_position(kps,dim,rot,meta,const)
-
+    position,rot_y,kps_inv=gen_position(kps,dim,rot,meta['trans_output_inv'],meta['calib'],const)
     detections = torch.cat([bboxes, scores, kps_inv,dim,hm_score,rot_y,position,prob,clses], dim=2)
-
-
     return detections
+
 def car_pose_decode_faster(
         heat, kps, dim, rot, prob, K=100, meta=None, const=None):
     batch, cat, height, width = heat.size()
@@ -800,7 +792,7 @@ def car_pose_decode_faster(
     rot = rot.view(batch, K, 8)
     prob = prob[:,:,0]
     prob = prob.view(batch, K, 1)
-    position,rot_y,kps_inv=gen_position(kps,dim,rot,meta,const)
+    position,rot_y,kps_inv=gen_position(kps,dim,rot,meta['trans_output_inv'],meta['calib'],const)
     #bboxes=kps[:,:,0:4]
     bboxes_kp=kps.view(kps.size(0),kps.size(1),9,2)
     box_min,_=torch.min(bboxes_kp,dim=2)
@@ -809,5 +801,23 @@ def car_pose_decode_faster(
     hm_score=kps[:,:,0:9]
     detections = torch.cat([bboxes, scores, kps_inv,dim,hm_score,rot_y,position,prob,clses], dim=2)
 
-
     return detections
+
+def car_pose_decode_faster_train(
+        heat, kps, dim, rot, meta=None, const=None):
+    batch, cat, height, width = heat.size()
+    K, num_joints = kps.shape[1], kps.shape[-1] // 2
+    heat = _nms(heat)
+
+    scores, inds, clses, ys, xs = _topk(heat, K=K)
+    kps = kps.view(batch, K, num_joints * 2)
+    kps[..., ::2] += xs.view(batch, K, 1).expand(batch, K, num_joints)
+    kps[..., 1::2] += ys.view(batch, K, 1).expand(batch, K, num_joints)
+    scores = scores.view(batch, K, 1)
+    dim = dim.view(batch, K, 3)
+    rot = rot.view(batch, K, 8)
+    position, rot_y, kps_inv=gen_position(kps,dim,rot,meta['opinv'],meta['calib'],const)
+    pred_box3d = torch.cat((position.view(-1, 3), dim.view(-1, 3), rot_y.view(-1, 1)), dim=-1)
+
+    cls_scores = scores.view(-1, 1)    
+    return pred_box3d, cls_scores

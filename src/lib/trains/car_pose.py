@@ -3,13 +3,17 @@ from __future__ import division
 from __future__ import print_function
 
 import torch
+from torch.nn import functional as F
 import numpy as np
 
-from models.losses import FocalLoss, RegL1Loss, PoisRegL1Loss, RegLoss, PoisRegWeightedL1Loss, PoisBinRotLoss, Position_loss, PoisL1Loss, PoisBinRotLoss
-from models.decode import car_pose_decode
+from models.losses import FocalLoss, PoisRegL1Loss, WeightedPoisRegL1Loss, RegLoss, PoisRegWeightedL1Loss, WeightedPoisBinRotLoss, Position_loss, PoisL1Loss, PoisBinRotLoss
+from models.decode import car_pose_decode, car_pose_decode_faster_train
 from models.utils import _sigmoid
 from utils.debugger import Debugger
 from utils.post_process import car_pose_post_process
+
+from mmdet3d.core.bbox.iou_calculators.iou3d_calculator import BboxOverlaps3D
+
 from .base_trainer import BaseTrainer
 class CarPoseLoss(torch.nn.Module):
     def __init__(self, opt):
@@ -18,13 +22,20 @@ class CarPoseLoss(torch.nn.Module):
         self.crit_hm_hp = torch.nn.MSELoss() if opt.mse_loss else FocalLoss()
         self.crit_kp = PoisRegWeightedL1Loss() if not opt.dense_hp else \
             torch.nn.L1Loss(reduction='sum')
-        self.crit_pois_reg = PoisRegL1Loss() if opt.reg_loss == 'l1' else \
+        self.crit_reg = WeightedPoisRegL1Loss() if opt.reg_loss == 'l1' else \
             RegLoss() if opt.reg_loss == 'sl1' else None
-        self.crit_reg = RegL1Loss() if opt.reg_loss == 'l1' else \
+        self.crit_hp_reg = PoisRegL1Loss() if opt.reg_loss == 'l1' else \
             RegLoss() if opt.reg_loss == 'sl1' else None
-        self.crit_rot = PoisBinRotLoss()
+        self.crit_rot = WeightedPoisBinRotLoss()
         self.opt = opt
         self.position_loss=Position_loss(opt)
+
+        self.iou_calculator = BboxOverlaps3D(coordinate="camera")
+        const = torch.Tensor(
+            [[-1, 0], [0, -1], [-1, 0], [0, -1], [-1, 0], [0, -1], [-1, 0], [0, -1], [-1, 0], [0, -1], [-1, 0], [0, -1],
+            [-1, 0], [0, -1], [-1, 0], [0, -1]])
+        self.const = const.unsqueeze(0).unsqueeze(0)
+        self.const=self.const.to(self.opt.device)
 
     def forward(self, outputs, batch,phase=None):
         opt = self.opt
@@ -35,23 +46,40 @@ class CarPoseLoss(torch.nn.Module):
         box_score=0
         output = outputs[0]
         output['hm'] = _sigmoid(output['hm'])
+
+        pred_box3d, cls_scores = car_pose_decode_faster_train(
+             output['hm'].clone(), output['hps'].clone(), output['dim'].clone(), output['rot'].clone(), meta=batch, const=self.const)
+        gt_box3d = torch.cat((batch['location'].view(-1, 3), 
+             batch['dim'].view(-1, 3), batch['ori'].view(-1, 1)), dim=-1)
+        bbox_ious_3d = self.iou_calculator(gt_box3d, pred_box3d, "iou")
+        nums_boxes = bbox_ious_3d.shape[0]
+        # [N*K, 1]
+        bbox_ious_3d = bbox_ious_3d[range(nums_boxes), range(nums_boxes)].view(-1, 1)
+        reg_mask = batch["reg_mask"].flatten()
+        num_objs = torch.sum(reg_mask)
+        # reg_weight = 4 * cls_scores + (1 - bbox_ious_3d)
+        reg_weight = cls_scores
+        reg_weight_masked = reg_weight[reg_mask.bool()]
+        reg_weight_masked = F.softmax(reg_weight_masked, dim=0) * num_objs
+        reg_weight[reg_mask.bool()] = reg_weight_masked  # [N*K, 1]
+        reg_weight[:] = 1
         if opt.hm_hp and not opt.mse_loss:
             output['hm_hp'] = _sigmoid(output['hm_hp'])
         hm_loss = self.crit(output['hm'], batch['hm'])
-        hp_loss = self.crit_kp(output['hps'],batch['hps_mask'], batch['hps'], batch['dep'])
+        hp_loss = self.crit_kp(output['hps'], batch['hps_mask'], batch['hps'], batch['dep'])
         if opt.wh_weight > 0:
-            wh_loss = self.crit_pois_reg(output['wh'], batch['reg_mask'], batch['wh'])
+            wh_loss = self.crit_reg(output['wh'], reg_weight, batch['reg_mask'], batch['wh'])
         if opt.dim_weight > 0:
-            dim_loss = self.crit_pois_reg(output['dim'], batch['reg_mask'], batch['dim'])
+            dim_loss = self.crit_reg(output['dim'], reg_weight, batch['reg_mask'], batch['dim'])
         if opt.rot_weight > 0:
-            rot_loss = self.crit_rot(output['rot'], batch['rot_mask'], batch['rotbin'], batch['rotres'])
+            rot_loss = self.crit_rot(output['rot'], reg_weight, batch['rot_mask'], batch['rotbin'], batch['rotres'])
         if opt.reg_offset and opt.off_weight > 0:
-            off_loss = self.crit_pois_reg(output['reg'], batch['reg_mask'], batch['reg'])
+            off_loss = self.crit_reg(output['reg'], reg_weight, batch['reg_mask'], batch['reg'])
         if opt.reg_hp_offset and opt.off_weight > 0:
-            hp_offset_loss = self.crit_pois_reg(output['hp_offset'], batch['hp_mask'], batch['hp_offset'])
+            hp_offset_loss = self.crit_hp_reg(output['hp_offset'], batch['hp_mask'], batch['hp_offset'])
         if opt.hm_hp and opt.hm_hp_weight > 0:
             hm_hp_loss = self.crit_hm_hp(output['hm_hp'], batch['hm_hp'])
-        coor_loss, prob_loss, box_score = self.position_loss(output, batch,phase)
+        coor_loss, prob_loss, box_score = self.position_loss(output, reg_weight, batch,phase)
         total_loss = hm_loss + hp_loss + hm_hp_loss + hp_offset_loss + wh_loss + off_loss + dim_loss + rot_loss + prob_loss + coor_loss
         loss_stats = {'loss': total_loss, 'hm_loss': hm_loss, 'hp_loss': hp_loss,
                       'hm_hp_loss': hm_hp_loss, 'hp_offset_loss': hp_offset_loss,

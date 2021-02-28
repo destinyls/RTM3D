@@ -131,6 +131,7 @@ class CarPoseDataset(data.Dataset):
             alpha1=ann['alpha']
             orien=ann['rotation_y']
             loc = ann['location']
+
             if flipped:
                 alpha1=np.sign(alpha1)*np.pi-alpha1
                 orien = np.sign(orien) * np.pi - orien
@@ -229,4 +230,5 @@ class CarPoseDataset(data.Dataset):
                 np.zeros((1, 40), dtype=np.float32)
             meta = {'c': c, 's': s, 'gt_det': gt_det, 'img_id': img_id}
             ret['meta'] = meta
+
         return ret

@@ -215,6 +215,24 @@ class PoisRegL1Loss(nn.Module):
         loss = loss / (mask.sum() + 1e-4)
         return loss
 
+class WeightedPoisRegL1Loss(nn.Module):
+  def __init__(self):
+    super(WeightedPoisRegL1Loss, self).__init__()
+  
+  def forward(self, pred, weight, mask, target):
+    mask = mask.unsqueeze(2).expand_as(pred).float()
+    if len(pred.shape) > 2:
+        pred = pred.view(-1, pred.shape[-1])
+        mask = mask.view(-1, mask.shape[-1])
+    if len(target.shape) > 2:
+        target = target.view(-1, target.shape[-1])
+    if mask.shape[0] != weight.shape[0]:
+        weight = weight.repeat(1, 9).view(-1, 1)
+
+    diffs = torch.abs(pred*mask - target*mask) * weight
+    loss = torch.sum(diffs) / (mask.sum() + 1e-4)
+    return loss
+
 class NormRegL1Loss(nn.Module):
     def __init__(self):
         super(NormRegL1Loss, self).__init__()
@@ -246,6 +264,14 @@ class PoisBinRotLoss(nn.Module):
     loss = compute_rot_loss(pred, rotbin, rotres, mask)
     return loss
 
+class WeightedPoisBinRotLoss(nn.Module):
+  def __init__(self):
+    super(WeightedPoisBinRotLoss, self).__init__()
+  
+  def forward(self, pred, weight, mask, rotbin, rotres):
+    loss = weighted_compute_rot_loss(pred, rotbin, rotres, mask, weight)
+    return loss
+
 def compute_res_loss(output, target):
     return F.smooth_l1_loss(output, target, reduction='mean')
 
@@ -275,6 +301,7 @@ class PoisRegWeightedL1Loss(nn.Module):
         dep[dep >= 5] = torch.log10(dep[dep >=5]-4)+0.1
         mask = mask.float()
         loss = torch.abs(pred * mask - target * mask)
+
         loss = torch.sum(loss,dim=2) * dep
         loss = loss.sum()
         loss = loss / (mask.sum() + 1e-4)
@@ -329,6 +356,13 @@ class BinRotLoss(nn.Module):
 def compute_res_loss(output, target):
     return F.smooth_l1_loss(output, target, reduction='elementwise_mean')
 
+def weighted_compute_res_loss(output, target, weight, reduction='mean'):
+    diffs = torch.abs(output.unsqueeze(-1) - target.unsqueeze(-1)) * weight
+    if reduction == "sum":
+        loss = torch.sum(diffs)
+    elif reduction == "mean":
+        loss = torch.mean(diffs)
+    return loss
 
 # TODO: weight
 def compute_bin_loss(output, target, mask):
@@ -349,7 +383,7 @@ class Position_loss(nn.Module):
 
         self.num_joints = 9
 
-    def forward(self, output, batch,phase=None):
+    def forward(self, output, weight, batch,phase=None):
         dim = output['dim']
         rot = output['rot']
         prob = output['prob']
@@ -486,6 +520,7 @@ class Position_loss(nn.Module):
         loss_norm = torch.norm(loss, p=2, dim=2)
         loss_mask = loss_mask.float()
         loss = loss_norm * loss_mask
+        loss = loss * (weight.view(loss.shape[0], loss.shape[1]))
         mask_num = (loss != 0).sum()
         loss = loss.sum() / (mask_num + 1)
         dim_gt = batch['dim'].clone()  # b,c,3
@@ -506,6 +541,8 @@ class Position_loss(nn.Module):
         box_score = box_score * loss_mask * dim_mask_score_mask
         loss_prob = F.binary_cross_entropy_with_logits(prob, box_score.detach(), reduce=False)
         loss_prob = loss_prob * loss_mask * dim_mask_score_mask
+        loss_prob = loss_prob * (weight.view(loss_prob.shape[0], loss_prob.shape[1]))
+
         loss_prob = torch.sum(loss_prob, dim=1)
         loss_prob = loss_prob.sum() / (mask_num + 1)
         box_score = box_score * loss_mask
@@ -574,5 +611,44 @@ def compute_rot_loss(output, target_bin, target_res, mask):
             valid_output2[:, 6], torch.sin(valid_target_res2[:, 1]))
         loss_cos2 = compute_res_loss(
             valid_output2[:, 7], torch.cos(valid_target_res2[:, 1]))
+        loss_res += loss_sin2 + loss_cos2
+    return loss_bin1 + loss_bin2 + loss_res
+
+
+def weighted_compute_rot_loss(output, target_bin, target_res, mask, weight):
+    # output: (B, 128, 8) [bin1_cls[0], bin1_cls[1], bin1_sin, bin1_cos, 
+    #                 bin2_cls[0], bin2_cls[1], bin2_sin, bin2_cos]
+    # target_bin: (B, 128, 2) [bin1_cls, bin2_cls]
+    # target_res: (B, 128, 2) [bin1_res, bin2_res]
+    # mask: (B, 128, 1)
+    # import pdb; pdb.set_trace()
+    output = output.view(-1, 8)
+    target_bin = target_bin.view(-1, 2)
+    target_res = target_res.view(-1, 2)
+    mask = mask.view(-1, 1)
+    loss_bin1 = compute_bin_loss(output[:, 0:2], target_bin[:, 0], mask)
+    loss_bin2 = compute_bin_loss(output[:, 4:6], target_bin[:, 1], mask)
+    loss_res = torch.zeros_like(loss_bin1)
+    if target_bin[:, 0].nonzero().shape[0] > 0:
+        idx1 = target_bin[:, 0].nonzero()[:, 0]
+        valid_output1 = torch.index_select(output, 0, idx1.long())
+        valid_target_res1 = torch.index_select(target_res, 0, idx1.long())
+        valid_weight1 = torch.index_select(weight, 0, idx1.long())
+        loss_sin1 = weighted_compute_res_loss(
+          valid_output1[:, 2], torch.sin(valid_target_res1[:, 0]), valid_weight1)
+        loss_cos1 = weighted_compute_res_loss(
+          valid_output1[:, 3], torch.cos(valid_target_res1[:, 0]), valid_weight1)
+
+        loss_res += loss_sin1 + loss_cos1
+    if target_bin[:, 1].nonzero().shape[0] > 0:
+        idx2 = target_bin[:, 1].nonzero()[:, 0]
+        valid_output2 = torch.index_select(output, 0, idx2.long())
+        valid_target_res2 = torch.index_select(target_res, 0, idx2.long())
+        valid_weight2 = torch.index_select(weight, 0, idx2.long())
+        loss_sin2 = weighted_compute_res_loss(
+          valid_output2[:, 6], torch.sin(valid_target_res2[:, 1]), valid_weight2)
+        loss_cos2 = weighted_compute_res_loss(
+          valid_output2[:, 7], torch.cos(valid_target_res2[:, 1]), valid_weight2)
+
         loss_res += loss_sin2 + loss_cos2
     return loss_bin1 + loss_bin2 + loss_res
